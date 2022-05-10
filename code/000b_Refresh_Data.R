@@ -1,0 +1,7 @@
+rm(list = ls())
+gc()
+source("final_project/code/01_Extract_Education_Index.R")
+source("final_project/code/02_Extract_UNDP_HDR.R")
+source("final_project/code/03_Extract_OECD_MEI_REAL.R")
+source("final_project/code/04_Extract_OECD_PDBI_I4.R")
+source("final_project/code/05_Join_Data.R")

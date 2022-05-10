@@ -1,0 +1,461 @@
+---
+title: "Education Index"
+output: pdf_document
+---
+
+```{r, echo=FALSE, message=F, results='hide', warning=FALSE}
+pacman::p_load(
+  jsonlite,
+  httr,
+  lubridate,
+  DataExplorer,
+  knitr,
+  reshape2,
+  rpart,
+  rpart.plot,
+  randomForest,
+  car,
+  MASS,
+  tidyverse,
+  Metrics,
+  lmtest
+)
+
+source("final_project/code/000a_Load_Back.R")
+Development_Set <- All_X1 %>% dplyr::select(-Country, -Year)
+Development_Set <- Development_Set %>% mutate(across(everything(),as.numeric))
+
+```
+
+# Introduction
+
+|  The main goal of this study was to find potential contributing factors to Education Index. Education Index is defined as average of the expected years of schooling index and mean years of schooling index. Where an index is calculated as (Actual - Minimum)/(Maximum - Minimum). The education index is an important dimension that is assessed by the United Nations in order to determine a country's HDI, or Human Development Index. According to the [United Nations Website](https://hdr.undp.org/en/content/human-development-index-hdi), "The HDI was created to emphasize that people and their capabilities should be the ultimate criteria for assessing the development of a country, not economic growth alone.". The way they compute HDI is by considering three dimensions: a long and healthy life (Life Expectancy Index), knowledge (Education Index), and a decent standard of living (GNI Index).  
+
+|  I believe that education is vital to human life and having proper access to education should be a human right, therefore I wanted to research what contributing factors could help boost the Education Index. Primarily, I wanted to focus on factors that were relevant to a country's economy. Such as employment rates. I was also interested in seeing if increased business in certain industries affected a country's EDI. An example of this could be the television or video game industry. The scope of this project could increase tremendously when considering so many factors so I'd like be reasonable with my variable selection. I will initially begin my analysis with data provided solely by the United Nations. Later on in the analysis I will include data from the Organization for Economic Co-operation and Development [OECD](https://stats.oecd.org/Index.aspx?DataSetCode=RS_GBL).
+  
+\newpage
+
+# Data Description
+
+As mentioned, I will begin by using data provided by the United Nations Human Development report. Although I am primarily focused on economic data that could affect education index there were some variables that I felt would be interesting to include in the model. Below we have a table of the variables selected from the HDRO API and another with the datasets dimensions. 
+
+```{r, echo=F}
+kable(Data_Description_1[1])
+```
+
+```{r, echo=F}
+data.frame(Rows = dim(All_X1_PRE)[1], Columns = dim(All_X1_PRE)[2]) %>% kable()
+```
+\newpage
+At first glance it looks like great data but, unfortunately a lot of this data had missing values as seen in the table below:  
+
+```{r, echo=F}
+profile_missing(All_X1_PRE) %>% 
+  mutate(pct_missing = round(pct_missing, 2)) %>% 
+  arrange(desc(pct_missing)) %>% 
+  kable()
+```
+I believe this was the first immediate challenge to my ananlysis. During my model building I will not use year or country and try to keep the model as generic as possible. I will also have to drop na values for use in the model building. Therefore, depending on which variables I keep I will lose a certain percentage of data. I Decide on losing 53% of data and continue with the following columns:
+
+```{r, echo=F}
+cols <- data.frame(Variables = colnames(All_X1))
+dimens <- data.frame(Rows = dim(All_X1)[1], Columns = dim(All_X1)[2])
+kable(cols)
+kable(dimens)
+```
+
+\newpage
+## Checking for Correlation
+
+Now that I have a dataset to work with, I will check for correlation amongst the variables. I will use a correlation heatmap. This will help identify any possible areas of multicolinearity.
+
+```{r, echo=F}
+cormat <- round(cor(Development_Set),1)
+cormat[lower.tri(cormat)] <- NA
+upper_tri <- cormat
+# Melt the correlation matrix
+
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# Heatmap
+
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "red", high = "blue", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 12, hjust = 1))+
+  coord_fixed() +
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y = element_text(size = 8),
+    axis.text.x = element_text(size = 8),
+    legend.justification = c(1, 0),
+    legend.position = c(0.6, 0.7),
+    legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                               title.position = "top", title.hjust = 0.5)) +
+  scale_x_discrete(labels=1:14) +
+  scale_y_discrete(labels=1:14)
+```
+
+```{r, echo=F}
+
+temp_frame<- data.frame(Variable = colnames(Development_Set), Key = row_number(colnames(Development_Set))) %>% arrange(Key) 
+
+temp_frame[2:4,] %>% 
+  pivot_wider(names_from = Variable, values_from = Key) %>% knitr::kable()
+
+temp_frame[5:8,] %>%
+  arrange(Key) %>% 
+  pivot_wider(names_from = Variable, values_from = Key) %>% knitr::kable()
+```
+\newpage
+
+From The correlation matrix on page 4, I see that most of the variables have a strong correlation with EDI. However, I do also see signs of multicolinearity present. I will keep this in consideration as I go through the model building process. I may want to consider a box-cox transformation and/or including interaction effects.
+
+## Histograms of EDI
+
+Before beginning to build my model I wanted to take a look at my Y variable, Education Index.  
+I noticed that the data seemed a bit negatively skewed and it almost had a bimodal appearance. I decided on squaring Education Index and it seemed to make the data appear a bit more normal. LAter on in my model developement I try a boxcox transformation and  I will remember these plots when deciding on a final model.
+
+```{r, echo=F, message=F, warning=F, fig.show="hold", out.width="50%"}
+
+ggplot(data = Development_Set) +
+  geom_histogram(aes(x = Education_Index), fill = "forestgreen") +
+  xlab("Education Index") +
+  theme_light()
+
+ggplot(data = Development_Set) +
+  geom_histogram(aes(x = Education_Index^2), fill = "forestgreen") +
+  xlab("Education Index Squared") +
+  theme_light()
+```
+```{r lambda_hist, echo=F, message=F, warning=F, fig.show="hold", out.width="50%"}
+ggplot(data = Development_Set) +
+  geom_histogram(aes(x = ((Education_Index^1.18)-1)/1.18), fill = "forestgreen") +
+  xlab("Education Index lambda = 1.18") +
+  theme_light()
+```
+
+\newpage
+
+# Methods and Results
+
+## Full Multiple Linear Regression Model
+
+I will build a full multiple linear regression model using the variables listed at the end of page . Notice that almost all of the variables in the model were indicated to have a significant effect on education index. "Employment in services" had the only p-value greater than alpha of 0.05. This indicates that the rest of the variables have a significant relationship with education index. 
+
+```{r, echo=F, warning=F}
+set.seed(6470307)
+index <- sample(1:nrow(Development_Set), nrow(Development_Set)* .7)
+train <- Development_Set[index,]
+test <- Development_Set[-index,]
+model <- lm(Education_Index ~ ., data = train)
+summary(model)
+```
+
+\newpage
+
+## Reducing using VIF
+
+Remembering the correlation matrix from earlier I'd like to check the Variable Inflation Factor, or vif, to ensure that we remove variables with high colliniearity.
+
+```{r, echo=F}
+vif_model <- vif(model) %>% as.data.frame() %>% rownames_to_column() 
+colnames(vif_model) <- c("Variable", "vif")
+ggplot(data = vif_model %>% arrange(desc(vif)) %>% mutate(Variable)) +
+  geom_col(aes(y = fct_reorder(Variable, vif), x = vif, fill = vif)) +
+  scale_fill_gradient(low = "skyblue", high = "violetred") +
+  ylab("Variable")
+```
+
+
+After seeing the plot above I decided to remove Employment to population ratio and Labor force participation rate. I believe I may be indirectly gathering this data from the Unemployment total. I then rebuild the model and check the vif again.
+
+\newpage
+```{r, echo=F, warning=F}
+train2 <- train %>% 
+  dplyr::select(Education_Index,
+         `Employment in agriculture (% of total employment)`,
+         `Employment in services (% of total employment)`,
+         `GDP per capita (2017 PPP $)`,
+         `Life expectancy at birth (years)`,
+         `Unemployment, total (% of labour force)`)
+
+model2 <- lm(Education_Index ~ ., data = train2)
+
+```
+
+
+```{r, echo=F, warning=F}
+vif_model2 <- vif(model2) %>% as.data.frame() %>% rownames_to_column() 
+colnames(vif_model2) <- c("Variable", "vif")
+ggplot(data = vif_model2 %>% arrange(desc(vif)) %>% mutate(Variable)) +
+  geom_col(aes(y = fct_reorder(Variable, vif), x = vif, fill = vif)) +
+  scale_fill_gradient(low = "skyblue", high = "violetred") +
+  ylab("Variable")
+```
+
+I still have some high colinearity, I will try to remove the highest vif variable and rebuild the model again.
+
+\newpage
+
+```{r, echo=F, warning=F}
+
+
+model3 <- lm(Education_Index ~
+         `Employment in services (% of total employment)`+
+         `GDP per capita (2017 PPP $)` +
+         `Life expectancy at birth (years)` +
+         `Unemployment, total (% of labour force)`, data = train2)
+
+vif_model3 <- vif(model3) %>% as.data.frame() %>% rownames_to_column() 
+colnames(vif_model3) <- c("Variable", "vif")
+ggplot(data = vif_model3 %>% arrange(desc(vif)) %>% mutate(Variable)) +
+  geom_col(aes(y = fct_reorder(Variable, vif), x = vif, fill = vif)) +
+  scale_fill_gradient(low = "skyblue", high = "violetred") +
+  ylab("Variable")
+
+```
+
+I see that all of my vif values are less than 5 meaning we have effectively remove colinearity from the model. I will check the results of the new model and also if the assumptions are properly met.
+
+\newpage 
+
+```{r, echo=F, warning=F}
+summary(model3)
+```
+
+All of the variables within the model have a p-value of approximately 0, which is lower than alpha level of 0.05 this indicates that the variable coefficients have a significant effect on the education index. Next, I will check model assumptions.
+
+\newpage
+
+```{r, echo=F, fig.show="hold", out.width="50%"}
+plot(model3, 1:2)
+shapiro.test(rstandard(model3))
+bptest(model3)
+```
+
+The diagnostic plots above could be a lot better. Although the residuals seem to follow a normal distribution there does appear to be some issues in linearity. Also, at the moment I don't feel comfortable assuming equal variances. I will perform a boxcox transformation to see if there a potential value I could use to transform the response.
+
+```{r, echo=F, out.height="50%"}
+boxcox(model3, lambda=seq(0.9, 1.5, by=0.01))
+summary(powerTransform(model3))
+```
+Looking at the boxcox plot above, I will transform the response, since $\lambda \approx 1.18$. 
+I will use the formula $(Y^{\lambda}-1)/\lambda$ A histogram of the transformation can be found here \@ref(fig:lambda_hist). We can see that the transformation seems to helps the distribution appear a bit more normal. 
+
+\newpage
+  
+```{r, echo=F, fig.show="hold", out.width="50%"}
+model4 <- lm(((I(Education_Index)^1.1832-1)/1.1832) ~
+         `Employment in services (% of total employment)`+
+         `GDP per capita (2017 PPP $)` +
+         `Life expectancy at birth (years)` +
+         `Unemployment, total (% of labour force)`, data = train2)
+
+summary(model4)
+plot(model4, 1)
+qqnorm(y = rstandard(model4))
+abline(0, 1)
+```
+  
+  It appears that the box-cox transformation did not help with stabilizing the variance or making the normality more linear.  
+  
+\newpage
+
+### Linear Regression Model Evaluations
+I will still make some predictions using the various multiple regression models, however please note they all did not satisfy the assumption checks in my opinion.  
+
+```{r, echo=F}
+preds <- predict(model, test)
+actuals <- test$Education_Index 
+ggplot() +
+  geom_point(aes(x = preds, y = actuals)) +
+  geom_abline(slope = 1, intercept = 0) +
+  labs(title = "Full Model",
+       subtitle = paste0("RMSE = ", rmse(actuals, preds)))
+```
+
+
+```{r echo=F}
+preds <- predict(model3, test)
+actuals <- test$Education_Index 
+ggplot() +
+  geom_point(aes(x = preds, y = actuals)) +
+  geom_abline(slope = 1, intercept = 0) +
+  labs(title = "Reduced Model",
+       subtitle = paste0("RMSE = ", rmse(actuals, preds)))
+
+
+
+```
+
+```{r, echo=F}
+preds <- predict(model4, test)
+actuals <- (((test$Education_Index)^1.1832)-1)/1.1832
+
+ggplot() +
+  geom_point(aes(x = preds, y = actuals)) +
+  geom_abline(slope = 1, intercept = 0) +
+  labs(title = "Transformed Model",
+       subtitle = paste0("RMSE = ", rmse(actuals, preds)))
+```
+
+
+\newpage
+
+
+## Decision Tree 
+
+Seeing that the data does not pass the assumptions for a typical multiple linear regression model, I will try to create a decision tree using the variables that I began with. Since a regression tree is a non-parametric method I do not need to worry about collinearity or assumption checking.  
+
+```{r, echo=F, out.height="50%"}
+set.seed(6470307)
+index <- sample(1:nrow(Development_Set), nrow(Development_Set)* .7)
+train <- Development_Set[index,]
+test <- Development_Set[-index,]
+t1 <- rpart(Education_Index ~ ., data=train)
+par(cex=0.8, xpd=NA)
+
+
+prp(t1, type = 4, extra = 101, leaf.round = 1, fallen.leaves = TRUE,
+    varlen = 0, tweak = 0.8)
+
+
+```
+We can see from the regression tree above that GDP per capita was the most significant variable when choosing branches. This was followed by Life expectancy, and employment in agriculture. I'm very interested in seeing how the predictions versus actual values look when using this model.
+
+```{r, echo=F}
+preds <- predict(t1, test)
+actuals <- test$Education_Index 
+ggplot() +
+  geom_point(aes(x = preds, y = actuals)) +
+  geom_abline(slope = 1, intercept = 0) +
+  labs(title = "Decision Tree",
+       subtitle = paste0("RMSE = ", rmse(actuals, preds)))
+```
+Looking at the predicted versus actuals of the regression tree I'd say that the model is doing a poor job at predicting education index. Although the multiple linear regression model was not cleared on its assumption checks the predicted versus actuals plot looked very linear and seemed to follow the model.  
+
+\newpage
+## Random Forest
+
+Seeing as we have many variables in original data set I will build a random forest model with hopes that the model can find leverage multiple regression trees and cause the predictions to follow the 1 - 1 line tighter. I've created a random forest with all the variables and plotted the number of trees to error. It appears that at around 200 trees the error seems to be minimized.
+
+```{r, echo=F, warning=F, message=F}
+set.seed(6470307)
+index <- sample(1:nrow(Development_Set), nrow(Development_Set)* .7)
+train <- Development_Set[index,]
+test <- Development_Set[-index,]
+
+train_abc <- train
+colnames(train_abc) <- gsub(" ", "_", colnames(train_abc))
+column_names <- colnames(train_abc)
+colnames(train_abc) <- LETTERS[1:length(train_abc)]
+
+dictionary <- data.frame(rowname = LETTERS[1:length(train_abc)], Variable = column_names)
+rf1 <- randomForest(A ~ ., data = train_abc, mtry = sqrt(8))
+plot(rf1)
+
+rf1$importance %>% as.data.frame %>% rownames_to_column() %>% left_join(dictionary) %>% 
+  ggplot(data = .) +
+  geom_point(aes(y = fct_reorder(Variable, IncNodePurity), x = IncNodePurity)) +
+  ylab("Variable") +
+  xlab("Importance")
+```
+
+```{r, echo=F, warning=F, message=F}
+rf1 <- randomForest(A ~ ., data = train_abc, ntrees = 200, mtry=sqrt(8))
+print(rf1)
+
+test_abc <- test
+colnames(test_abc) <- gsub(" ", "_", colnames(test_abc))
+column_names <- colnames(test_abc)
+colnames(test_abc) <- LETTERS[1:length(test_abc)]
+
+preds <- predict(rf1, test_abc)
+actuals <- test$Education_Index 
+ggplot() +
+  geom_point(aes(preds, actuals))+
+  geom_abline(intercept=0,slope = 1, color = "red", size = 1.25, alpha = .6) +
+  geom_abline(intercept=.1,slope = 1, color = "blue", size = 1.25, alpha = .6) +
+  geom_abline(intercept=-.1,slope = 1, color = "blue", size = 1.25, alpha = .6) +
+  labs(title = "Predicted vs Actuals",
+       subtitle = paste0("RMSE = ", rmse(actuals, preds)))
+```
+
+Looking at the plot above I can see that most of the points land on the 1-1 line. You can see the band between the points is also a lot tighter. Overall I believe this model does a fairly good job when predicting. The only downsides to this that I see is that random forest is a black box model, so we do not get much information in terms of how the variables affect education index.
+
+
+
+# Conclusion
+
+In conclusion, after assessing the results of my models it appears clear that GDP is a strong predictor for education index. Although the UN tries to measure education index without trying to consider economics of a country, it is difficult to not consider GDP. Especially since after looking at several models there is clear indication that there is a significant relationship. I'd really like to take a closer look at the relationship between specific companies growth rate rate in revenue and their home country's EDI. I'd like to see if the companies that we seek out employment from and purchase items from, have a positive impact on our education. 
+
+
+\newpage
+
+# Extra
+
+With further data gathered from OECD, I tried to redevelop the random forest model using a few more predictors however with far less rows (about 400 total). I thought it was very interesting that it didn't decrease the RMSE significantly.
+
+
+```{r, echo=F}
+set.seed(6470307)
+index <- sample(1:nrow(df_done4), nrow(df_done4)* .7)
+train <- df_done4[index,]
+test <- df_done4[-index,]
+
+train_abc <- train
+colnames(train_abc) <- gsub(" ", "_", colnames(train_abc))
+column_names <- colnames(train_abc)
+colnames(train_abc) <- LETTERS[1:length(train_abc)]
+
+dictionary <- data.frame(rowname = LETTERS[1:length(train_abc)], Variable = column_names)
+# rf1 <- randomForest(A ~ ., data = train_abc)
+# plot(rf1)
+# rf1$importance %>% as.data.frame %>% rownames_to_column() %>% left_join(dictionary) %>% 
+#   ggplot(data = .) +
+#   geom_point(aes(y = fct_reorder(Variable, IncNodePurity), x = IncNodePurity)) +
+#   ylab("Variable")
+
+
+rf1 <- randomForest(A ~ ., data = train_abc, ntrees = 350, mtry = 4)
+
+test_abc <- test
+colnames(test_abc) <- gsub(" ", "_", colnames(test_abc))
+column_names <- colnames(test_abc)
+colnames(test_abc) <- LETTERS[1:length(test_abc)]
+
+preds <- predict(rf1, test_abc)
+actuals <- test$Education_Index 
+
+
+
+ggplot() +
+  geom_point(aes(preds, actuals))+
+  geom_abline(intercept=0,slope = 1, color = "red", size = 1.25, alpha = .6) +
+  geom_abline(intercept=.1,slope = 1, color = "blue", size = 1.25, alpha = .6) +
+  geom_abline(intercept=-.1,slope = 1, color = "blue", size = 1.25, alpha = .6) +
+  labs(title = "Predicted vs Actuals",
+       subtitle = paste0("RMSE = ", rmse(actuals, preds)))
+```
+
+# Code Appendix
+
+All of my Code can be found here:
+[https://github.com/AndMe707/Stat_632_Project](https://github.com/AndMe707/Stat_632_Project)
+
+In regards to this pdf the source for the data was loaded from the code labeled  
+"code/000a_Load_Back.R"  
+If you'd like to have a fresh data dump you can run this code first    
+"code/000b_Refresh_Data.R"  
+
