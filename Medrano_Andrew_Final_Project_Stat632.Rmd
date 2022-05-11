@@ -1,5 +1,8 @@
 ---
 title: "Education Index"
+subtitle: "An Economic Case Study"
+author: "Andrew Medrano"
+date: "May 10th, 2022"
 output: pdf_document
 ---
 
